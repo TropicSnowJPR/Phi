@@ -1,0 +1,73 @@
+{
+    "checkpoint_dir": "checkpoints",
+    "checkpoint_file": "model",
+    "database_dir": "db",
+    "database_file": "phidb",
+    "actions": [
+        {
+            "action": "nothing",
+            "key": "",
+            "enabled": true
+        },
+        {
+            "action": "forward",
+            "key": "w",
+            "enabled": true
+        },
+        {
+            "action": "left",
+            "key": "a",
+            "enabled": true
+        },
+        {
+            "action": "right",
+            "key": "d",
+            "enabled": true
+        },
+        {
+            "action": "back",
+            "key": "s",
+            "enabled": true
+        },
+        {
+            "action": "jump",
+            "key": "space",
+            "enabled": true
+        },
+        {
+            "action": "turn left",
+            "key": "mouse-left",
+            "enabled": true
+        },
+        {
+            "action": "turn right",
+            "key": "mouse-right",
+            "enabled": true
+        },
+        {
+            "action": "turn up",
+            "key": "mouse-up",
+            "enabled": false
+        },
+        {
+            "action": "turn down",
+            "key": "mouse-down",
+            "enabled": false
+        },
+        {
+            "action": "attack",
+            "key": "left-click",
+            "enabled": false
+        },
+        {
+            "action": "use",
+            "key": "right-click",
+            "enabled": false
+        },
+        {
+            "action": "mine",
+            "key": "left-click-hold",
+            "enabled": false
+        }
+    ]
+}
