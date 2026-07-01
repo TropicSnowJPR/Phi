@@ -1,0 +1,236 @@
+agent:
+  name: Phi(Φ)
+
+  environment:
+    world:
+      seed: null
+
+    screen:
+      width: 84
+      height: 84
+
+    capture:
+      monitor_index: 1
+
+    render:
+      fps: 60
+      tick_rate: 20
+
+  episode:
+    max_steps: 2000
+    auto_respawn: true
+
+  observation:
+    preprocessing:
+      color_space: rgb
+      normalize: true
+      frame_stack: 1
+      frame_skip: 1
+
+    memory:
+      sequence_length: 32
+
+    state_buffer:
+      current: 1
+      previous: 2
+
+  action_space:
+    defaults:
+      key_hold_ms: 100
+      mouse_move_ms: 10
+      step_delay_s: 0.0167
+
+    input:
+      mouse_smoothing: true
+      key_repeat_lockout_ms: 50
+
+    actions:
+      - id: noop
+        type: noop
+        enabled: true
+
+      - id: forward
+        type: key
+        key: w
+
+      - id: left
+        type: key
+        key: a
+
+      - id: right
+        type: key
+        key: d
+
+      - id: back
+        type: key
+        key: s
+
+      - id: jump
+        type: key
+        key: space
+
+      - id: turn_left
+        type: mouse_move
+        delta: { x: 10, y: 0 }
+
+      - id: turn_right
+        type: mouse_move
+        delta: { x: -10, y: 0 }
+
+      - id: turn_up
+        type: mouse_move
+        delta: { x: 0, y: -10 }
+        enabled: false
+
+      - id: turn_down
+        type: mouse_move
+        delta: { x: 0, y: 10 }
+        enabled: false
+
+      - id: attack
+        type: mouse_button
+        button: left_click
+        enabled: false
+
+      - id: use
+        type: mouse_button
+        button: right_click
+        enabled: false
+
+      - id: mine
+        type: mouse_button
+        button: left_click
+        enabled: false
+
+model:
+  device: auto
+
+  encoder:
+    type: cnn
+    input_channels: 3
+
+  temporal:
+    type: lstm
+    hidden_size: 256
+    layers: 1
+    dropout: 0.0
+
+  policy_head:
+    hidden_size: 256
+    activation: relu
+
+training:
+  optimizer:
+    type: adam
+    learning_rate: 0.0001
+    weight_decay: 0.0
+    gradient_clip_norm: 0.5
+
+  loss:
+    value_weight: 0.5
+    entropy_weight: 0.01
+
+  exploration:
+    strategy: entropy
+
+    epsilon:
+      start: 1.0
+      end: 0.05
+      decay_steps: 100000
+
+  replay_buffer:
+    batch_size: 32
+
+reward:
+  normalize:
+    clip: [-1.0, 1.0]
+
+  shaping:
+    enabled: true
+    discount_factor: 0.99
+
+  components:
+    passive: 0.05
+    movement_per_block: 0.05
+    idle_penalty: 0.2
+    damage_per_heart: 0.5
+    death_penalty: -10.0
+    time_penalty: 0.0
+    height_reward: 0.0
+
+storage:
+  checkpoint:
+    path: /checkpoints/model.pth
+    save_on_episode_end: true
+    save_every_n_steps: 5000
+    max_keep: 5
+    include_optimizer_state: true
+    include_hidden_state: true
+    async: true
+
+  database:
+    path: /db/phidb.db
+
+network:
+  mode: local
+
+  tcp:
+    host: 0.0.0.0
+    port: 8001
+    buffer_size: 65536
+    keep_alive: true
+    timeout_ms: 5000
+
+    reconnect:
+      attempts: 999
+      delay_ms: 2000
+      backoff: linear
+
+  protocol:
+    version: 1
+    serialization: json
+
+  flow:
+    max_in_flight_messages: 128
+    rate_limit_per_second: 1000
+
+logging:
+  level: info
+
+  runtime:
+    print_actions: true
+    print_rewards: true
+    diagnostics: true
+
+  metrics:
+    log_action_probs: true
+    log_gradients: false
+
+  frequency:
+    print_every_n_steps: 50
+    save_metrics_every_n_steps: 100
+
+  files:
+    enabled: true
+    path: logs
+
+    general: agent.log
+    error: error.log
+    episodes: episodes.log
+    steps: steps.log
+
+    rotation:
+      max_size_mb: 50
+      keep_last_n: 5
+
+runtime:
+  crash_recovery:
+    max_failures: 5
+    auto_restart_episode: true
+
+  shutdown:
+    save_on_exit: true
+    timeout_s: 5
+
+  safety:
+    reset_hidden_state_on_episode_end: true

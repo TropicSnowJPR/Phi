@@ -1,5 +1,6 @@
 # Standard library
 import json
+import yaml
 import os
 import socket
 import sys
@@ -31,44 +32,66 @@ class Phi:
     
     def __init__(self):
 
-        if torch.cuda.is_available():
-            self.DEVICE = "cuda"
-            torch.backends.nnpack.enabled = True
-        else:
-            self.DEVICE = "cpu"
-            torch.backends.nnpack.enabled = False
-
-        with open("config.json", "r") as file:
-            self.CONFIG = json.load(file)
-            print(self.CONFIG)
+        with open("config.yaml", "r") as file:
+            self.CONFIG = yaml.safe_load(file)
         
         self.PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
         
         try:
-            self.CHECKPOINT_DIR = os.path.join(self.PROJECT_ROOT, self.CONFIG["checkpoint_dir"])
-            os.makedirs(self.CHECKPOINT_DIR, exist_ok=True)
-            self.CHECKPOINT_PATH = os.path.join(
-                self.CHECKPOINT_DIR,
-                self.CONFIG["checkpoint_file"] + ".pth"
-            )
-
-            self.DATABASE_DIR = os.path.join(self.PROJECT_ROOT, self.CONFIG["database_dir"])
-            os.makedirs(self.DATABASE_DIR, exist_ok=True)
-            self.DATABASE_PATH = os.path.join(
-                self.DATABASE_DIR,
-                self.CONFIG["database_file"] + ".db"
-            )
-
+            self.CHECKPOINT_PATH = os.path.join(self.CONFIG["storage"]["checkpoint"]["path"])
+            if not self.CHECKPOINT_PATH.endswith(".pth"):
+                self.CHECKPOINT_PATH += ".pth"
+            os.makedirs(os.path.dirname(self.CHECKPOINT_PATH), exist_ok=True)
+            
+            self.DATABASE_PATH = os.path.join(self.CONFIG["storage"]["database"]["path"])
+            if not self.DATABASE_PATH.endswith(".db"):
+                self.DATABASE_PATH += ".db"
+            os.makedirs(os.path.dirname(self.DATABASE_PATH), exist_ok=True)
         except OSError as e:
             raise Exception(f"Invalid path configuration: {e}") from e
-        
-            
+          
         self.ACTIONS = []
                       
-        for action in self.CONFIG["actions"]:
-            self.ACTIONS.append(action["action"])
+        for action in self.CONFIG["agent"]["action_space"]["actions"]:
+            self.ACTIONS.append(action["id"])
+
+        self.SCREEN_WIDTH = self.CONFIG["agent"]["environment"]["screen"]["width"]
+        self.SCREEN_HEIGHT = self.CONFIG["agent"]["environment"]["screen"]["height"]
+        self.CAPTURE_MONITOR_INDEX = self.CONFIG["agent"]["environment"]["capture"]["monitor_index"]
+        self.INPUT_CHANNELS = self.CONFIG["model"]["encoder"]["input_channels"]
+        self.LSTM_HIDDEN = self.CONFIG["model"]["temporal"]["hidden_size"]
+        self.KEY_HOLD_MS = self.CONFIG["agent"]["action_space"]["defaults"]["key_hold_ms"]
+        self.MOUSE_MOVE_MS = self.CONFIG["agent"]["action_space"]["defaults"]["mouse_move_ms"]
+        self.STEP_DELAY_S = self.CONFIG["agent"]["action_space"]["defaults"]["step_delay_s"]
+        self.TURN_LEFT_DELTA_X = self.CONFIG["agent"]["action_space"]["actions"][6]["delta"]["x"]
+        self.TURN_RIGHT_DELTA_X = self.CONFIG["agent"]["action_space"]["actions"][7]["delta"]["x"]
+        self.SEQUENCE_LENGTH = self.CONFIG["agent"]["observation"]["memory"]["sequence_length"]
+        self.STATE_CURRENT = self.CONFIG["agent"]["observation"]["state_buffer"]["current"]
+        self.STATE_PREVIOUS = self.CONFIG["agent"]["observation"]["state_buffer"]["previous"]
+        self.OPTIMIZER_LR = self.CONFIG["training"]["optimizer"]["learning_rate"]
+        self.BATCH_SIZE = self.CONFIG["training"]["replay_buffer"]["batch_size"]
+        self.DISCOUNT_FACTOR = self.CONFIG["reward"]["shaping"]["discount_factor"]
+        self.REWARD_PASSIVE = self.CONFIG["reward"]["components"]["passive"]
+        self.REWARD_MOVEMENT_PER_BLOCK = self.CONFIG["reward"]["components"]["movement_per_block"]
+        self.REWARD_IDLE_PENALTY = self.CONFIG["reward"]["components"]["idle_penalty"]
+        self.REWARD_DAMAGE_PER_HEART = self.CONFIG["reward"]["components"]["damage_per_heart"]
+        self.MAX_STEPS = self.CONFIG["agent"]["episode"]["max_steps"]
+        self.TCP_BUFFER_SIZE = self.CONFIG["network"]["tcp"]["buffer_size"]
+        self.TCP_TIMEOUT_S = self.CONFIG["network"]["tcp"]["timeout_ms"] / 1000
+        self.SHUTDOWN_TIMEOUT_S = self.CONFIG["runtime"]["shutdown"]["timeout_s"]
+            
+        if self.CONFIG["agent"]["model"]["device"] == "auto":
+            if torch.cuda.is_available():
+                self.DEVICE = "cuda"
+                torch.backends.nnpack.enabled = True
+            else:
+                self.DEVICE = "cpu"
+                torch.backends.nnpack.enabled = False
+        else:
+            self.DEVICE = self.CONFIG["agent"]["model"]["device"]
         
         self.DBMANAGER = RLDatabase(self.DATABASE_PATH)
+        
 
         class Agent(nn.Module):
             def __init__(self, MEMORY_INPUT_SIZE, MEMORY_HIDDEN_SIZE, POLICY_INPUT_SIZE, POLICY_ACTION_SIZE):
@@ -95,25 +118,25 @@ class Phi:
             
             
         model = CNN()
-        x = torch.zeros(1, 3, 84, 84)
+        x = torch.zeros(1, self.INPUT_CHANNELS, self.SCREEN_HEIGHT, self.SCREEN_WIDTH)
         CNN_OUTPUT_SIZE = model(x).shape[1]
             
         self.AGENT = Agent(
             MEMORY_INPUT_SIZE = CNN_OUTPUT_SIZE, 
-            MEMORY_HIDDEN_SIZE = 256, 
-            POLICY_INPUT_SIZE = 256, 
+            MEMORY_HIDDEN_SIZE = self.LSTM_HIDDEN, 
+            POLICY_INPUT_SIZE = self.LSTM_HIDDEN,
             POLICY_ACTION_SIZE = len(self.ACTIONS) 
         )
         
-        self.AGENT.to( device = self.DEVICE)
-        self.OPTIMIZER = optim.Adam( params = self.AGENT.parameters(), lr=1e-4 )
+        self.AGENT.to( device = self.DEVICE )
+        self.OPTIMIZER = optim.Adam( params = self.AGENT.parameters(), lr=self.OPTIMIZER_LR )
         
-        self.HIDDEN = ( torch.zeros( 1, 1, 256, device = self.DEVICE ), torch.zeros(1, 1, 256, device = self.DEVICE ))
+        self.HIDDEN = ( torch.zeros( 1, 1, self.LSTM_HIDDEN, device = self.DEVICE ), torch.zeros(1, 1, self.LSTM_HIDDEN, device = self.DEVICE ))
         
-        self.MEMORY = deque( maxlen = 32 )
+        self.MEMORY = deque( maxlen = self.SEQUENCE_LENGTH )
         
-        self.STATE = deque( maxlen=1 )
-        self.STATE_QUEUE = deque( maxlen=2 )
+        self.STATE = deque( maxlen= self.STATE_CURRENT )
+        self.STATE_QUEUE = deque( maxlen= self.STATE_PREVIOUS )
 
 
         self.RUNNING = True
@@ -139,12 +162,15 @@ class Phi:
     
         self.GAME_CONTROLLER = GameController()
         
+    def validate_config(cfg):
+        assert cfg["agent"]["environment"]["screen"]["width"] > 0
+        assert cfg["agent"]["environment"]["screen"]["height"] > 0
+        assert cfg["agent"]["model"]["temporal"]["hidden_size"] > 0
         
-        
-    def tcp_state_server( self, HOST = "0.0.0.0", PORT = 8001 ):
+    def tcp_state_server( self ):
         self.TCP_SERVER = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.TCP_SERVER.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.TCP_SERVER.bind((HOST, PORT))
+        self.TCP_SERVER.bind((self.CONFIG["network"]["tcp"]["host"], self.CONFIG["network"]["tcp"]["port"]))
         self.TCP_SERVER.listen(1)
 
         print("Waiting for Minecraft mod connection...")
@@ -155,7 +181,7 @@ class Phi:
         BUFFER = ""
 
         while True:
-            DATA = CONN.recv(65536)
+            DATA = CONN.recv(self.TCP_BUFFER_SIZE)
             if not DATA:
                 print("Client disconnected")
                 break
@@ -183,7 +209,7 @@ class Phi:
         return action.item()
 
     def preprocess(self, frame):
-        frame = cv2.resize(frame, (84, 84))
+        frame = cv2.resize(frame, (self.SCREEN_WIDTH, self.SCREEN_HEIGHT))
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         frame = frame.astype("float32") / 255.0
 
@@ -193,8 +219,8 @@ class Phi:
         return frame
 
     def get_minecraft_frame(self):
-        with mss.mss() as sct:
-            monitor = sct.monitors[1]
+        with mss.MSS() as sct:
+            monitor = sct.monitors[self.CAPTURE_MONITOR_INDEX]
             img = np.array(sct.grab(monitor))
             return img[:, :, :3]  # remove alpha
         return None
@@ -220,25 +246,25 @@ class Phi:
             pass
 
         elif action == 1:
-            self.GAME_CONTROLLER.press_key("w", 100)
+            self.GAME_CONTROLLER.press_key("w", self.KEY_HOLD_MS)
 
         elif action == 2:
-            self.GAME_CONTROLLER.press_key("a", 100)
+            self.GAME_CONTROLLER.press_key("a", self.KEY_HOLD_MS)
 
         elif action == 3:
-            self.GAME_CONTROLLER.press_key("d", 100)
+            self.GAME_CONTROLLER.press_key("d", self.KEY_HOLD_MS)
 
         elif action == 4:
-            self.GAME_CONTROLLER.press_key("s", 100)
+            self.GAME_CONTROLLER.press_key("s", self.KEY_HOLD_MS)
 
         elif action == 5:
-            self.GAME_CONTROLLER.press_key("space", 100)
+            self.GAME_CONTROLLER.press_key("space", self.KEY_HOLD_MS)
 
         elif action == 6:
-            self.GAME_CONTROLLER.move_smooth(10, 0, 10, 1 / 60)
+            self.GAME_CONTROLLER.move_smooth(self.TURN_LEFT_DELTA_X, 0, self.MOUSE_MOVE_MS, self.STEP_DELAY_S)
 
         elif action == 7:
-            self.GAME_CONTROLLER.move_smooth(-10, 0, 10, 1 / 60)
+            self.GAME_CONTROLLER.move_smooth(self.TURN_RIGHT_DELTA_X, 0, self.MOUSE_MOVE_MS, self.STEP_DELAY_S)
 
         return reward, current_state
 
@@ -246,18 +272,18 @@ class Phi:
         reward = 0.0
 
         if curr.position[0] != prev.position[0] or curr.position[2] != prev.position[2]:
-            reward += (abs(curr.position[2] - prev.position[2]) + abs(curr.position[0] - prev.position[0])) * 0.05
+            reward += (abs(curr.position[2] - prev.position[2]) + abs(curr.position[0] - prev.position[0])) * self.REWARD_MOVEMENT_PER_BLOCK
 
-        reward -= 0.5 * (prev.health - curr.health)
+        reward -= self.REWARD_DAMAGE_PER_HEART * (prev.health - curr.health)
 
         # idle penalty ( jump is ignored since it can because the AI to jump and not move )
         if curr.position[0] == prev.position[0] and curr.position[2] == prev.position[2]:
-            reward -= 0.2
+            reward -= self.REWARD_IDLE_PENALTY
 
         if curr.position[1] > prev.position[1]:
             pass
 
-        reward += 0.05
+        reward += self.REWARD_PASSIVE
 
         return reward
 
@@ -274,8 +300,8 @@ class Phi:
     def episode_done(self, state):
         if state.health == 0:
             # Respawn Button Click
-            self.GAME_CONTROLLER.press_key("tab", 10)
-            self.GAME_CONTROLLER.press_key("enter", 10)
+            self.GAME_CONTROLLER.press_key("tab", self.KEY_HOLD_MS)
+            self.GAME_CONTROLLER.press_key("enter", self.KEY_HOLD_MS)
         return state.health == 0
     
     def start_episode(self):
@@ -437,11 +463,11 @@ class Phi:
     def startup(self):
         print("Starting Minecraft agent...")
 
-        self.GAME_CONTROLLER.press_key("t", 10)
-        self.GAME_CONTROLLER.press_key("esc", 10)
-        self.GAME_CONTROLLER.press_key("t", 10)
-        self.GAME_CONTROLLER.press_key("up", 10)
-        self.GAME_CONTROLLER.press_key("enter", 10)
+        self.GAME_CONTROLLER.press_key("t", self.KEY_HOLD_MS)
+        self.GAME_CONTROLLER.press_key("esc", self.KEY_HOLD_MS)
+        self.GAME_CONTROLLER.press_key("t", self.KEY_HOLD_MS)
+        self.GAME_CONTROLLER.press_key("up", self.KEY_HOLD_MS)
+        self.GAME_CONTROLLER.press_key("enter", self.KEY_HOLD_MS)
 
     def loop(self): 
         try:            
@@ -469,7 +495,7 @@ class Phi:
             # ENV STEP
             REWARD, CURRENT_STATE = self.take_action_in_game( self.ACTION )
             
-            self.REWARD_BASELINE = 0.99 * self.REWARD_BASELINE + 0.01 * REWARD
+            self.REWARD_BASELINE = self.DISCOUNT_FACTOR * self.REWARD_BASELINE + (1 - self.DISCOUNT_FACTOR) * REWARD
             ADVANTAGE = REWARD - self.REWARD_BASELINE
             
             self.EPISODE_TOTAL_REWARD += REWARD
@@ -490,7 +516,7 @@ class Phi:
 
             self.MEMORY.append((LOG_PROB, ADVANTAGE))
             
-            if len(self.MEMORY) == 32:
+            if len(self.MEMORY) == self.BATCH_SIZE:
                 loss = 0
 
                 for log_prob, advantage in self.MEMORY:
@@ -503,13 +529,13 @@ class Phi:
                 self.MEMORY.clear()
 
             # 7. RESET EPISODE
-            if self.episode_done(CURRENT_STATE) or self.STEPS >= 2000:
+            if self.episode_done(CURRENT_STATE) or self.STEPS >= self.MAX_STEPS:
                 self.end_episode(
                     reason="death" if CURRENT_STATE.health == 0 else "timeout"
                 )
                 self.HIDDEN = ( 
-                    torch.zeros( 1, 1, 256, device = self.DEVICE ), 
-                    torch.zeros(1, 1, 256, device = self.DEVICE )
+                    torch.zeros( 1, 1, self.LSTM_HIDDEN, device = self.DEVICE ), 
+                    torch.zeros(1, 1, self.LSTM_HIDDEN, device = self.DEVICE )
                 )
                 self.STEPS = 0
                 self.REWARD_BASELINE = 0.0
@@ -536,13 +562,13 @@ if __name__ == "__main__":
         )
         
         HIDDEN = ( 
-            torch.zeros( 1, 1, 256, device = PhiAgent.DEVICE ), 
-            torch.zeros( 1, 1, 256, device = PhiAgent.DEVICE )
+            torch.zeros( 1, 1, PhiAgent.LSTM_HIDDEN, device = PhiAgent.DEVICE ), 
+            torch.zeros( 1, 1, PhiAgent.LSTM_HIDDEN, device = PhiAgent.DEVICE )
         )
 
         PhiAgent.save_checkpoint(PhiAgent.AGENT, PhiAgent.OPTIMIZER, PhiAgent.STEPS, HIDDEN)
         
-        PhiAgent.GAME_CONTROLLER.press_key("esc", 10)
+        PhiAgent.GAME_CONTROLLER.press_key("esc", PhiAgent.KEY_HOLD_MS)
         
         PhiAgent.RUNNING = False
         
@@ -553,7 +579,7 @@ if __name__ == "__main__":
                 pass
             
         try:
-            PhiAgent.TCP_SERVER_THREAD.join( timeout=2 )
+            PhiAgent.TCP_SERVER_THREAD.join( timeout=PhiAgent.SHUTDOWN_TIMEOUT_S )
         except Exception:
             pass
 
